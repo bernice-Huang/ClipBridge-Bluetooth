@@ -1,5 +1,11 @@
 # ClipBridge Bluetooth
 
+考研党/无纸化福音！笨人日常记文献笔记时喜欢电脑阅读平板记录，苦于无法及时传递想Mark的内容，故而制作此小项目。
+* 无需复杂快捷指令设定！
+* 无需每次登录更新地址！
+* 点对点传输安全性高！
+* easy go
+
 Windows → iPad 的实验性蓝牙图片剪贴板桥接工具。适合把电脑上的局部截图、PDF 图表或图片复制到 iPad 笔记应用中。
 
 An experimental Windows-to-iPad image clipboard bridge over Bluetooth Low Energy. No shared Wi-Fi, hotspot, IP configuration or cloud relay is needed for image transfer.
