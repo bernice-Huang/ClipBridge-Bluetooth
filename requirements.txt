@@ -1,0 +1,9 @@
+Pillow==12.3.0
+cryptography==47.0.0
+winrt-runtime==3.2.1
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Foundation.Collections==3.2.1
+winrt-Windows.Devices.Bluetooth==3.2.1
+winrt-Windows.Devices.Bluetooth.GenericAttributeProfile==3.2.1
+winrt-Windows.Storage.Streams==3.2.1
+pystray==0.19.5
