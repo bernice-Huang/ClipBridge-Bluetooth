@@ -1,8 +1,9 @@
-"""Windows BLE prototype. Captures NEW clipboard images only; no image files."""
+"""Windows BLE sender. Captures NEW images/plain text into memory only."""
 import argparse
 import asyncio
 import ctypes
 from ctypes import wintypes
+from dataclasses import dataclass
 import hashlib
 import hmac
 import json
@@ -29,8 +30,20 @@ from winrt.windows.storage.streams import DataReader, DataWriter
 import protocol as p
 from image_codec import DEFAULT_TARGET_BYTES, encode_image
 from runtime import pairing_key, VERSION
+from clipboard_text import read_text
 
 LOG = logging.getLogger("clipbridge")
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    data: bytes
+    width: int
+    height: int
+    captured_ms: int
+    detected: float
+    kind: str = "image"
+
 
 # Windows handles are pointer-sized. ctypes defaults to a 32-bit return value.
 ctypes.windll.kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
@@ -78,13 +91,16 @@ def load_key(path):
 
 
 class Sender:
-    def __init__(self, key, *, pipeline=4, quality="balanced", target_bytes=DEFAULT_TARGET_BYTES, on_status=None):
+    def __init__(self, key, *, pipeline=4, quality="balanced", target_bytes=DEFAULT_TARGET_BYTES, sync_text=True, on_status=None):
         if pipeline not in (1, 2, 4, 8):
             raise ValueError("Pipeline must be 1, 2, 4 or 8")
         self.key = key
         self.pipeline = pipeline
         self.quality = quality
         self.target_bytes = target_bytes
+        if type(sync_text) is not bool:
+            raise ValueError("Text sync setting must be boolean")
+        self.sync_text = sync_text
         self.on_status = on_status
         self.pending_configuration = None
         self.loop = asyncio.get_running_loop()
@@ -94,6 +110,7 @@ class Sender:
         self.challenges = {}
         self.client_id = None
         self.authenticated = set()
+        self.text_clients = set()
         self.latest = None
         self.pending = asyncio.Event()
         self.progress = asyncio.Event()
@@ -115,10 +132,21 @@ class Sender:
             except Exception:
                 LOG.exception("Status callback failed")
 
-    def configure(self, *, quality, pipeline, target_bytes):
+    def configure(self, *, quality, pipeline, target_bytes, sync_text=None):
         if quality not in ("balanced", "original") or pipeline not in (1, 2, 4, 8) or not 16 * 1024 <= target_bytes <= 128 * 1024:
             raise ValueError("Invalid sender settings")
+        if sync_text is not None and type(sync_text) is not bool:
+            raise ValueError("Text sync setting must be boolean")
         self.pending_configuration = (quality, pipeline, target_bytes)
+        if sync_text is not None:
+            with self.capture_lock:
+                if sync_text != self.sync_text:
+                    self.sync_text = sync_text
+                    self.capture_epoch += 1
+                    self.capture_baseline = ctypes.windll.user32.GetClipboardSequenceNumber()
+                    if self.latest is not None and self.latest.kind == "text":
+                        self.latest = None
+                        self.pending.clear()
         if self.active_id is None:
             self.apply_pending_configuration()
 
@@ -170,7 +198,7 @@ class Sender:
         self.provider = result.service_provider
         self.info = await self.characteristic(p.INFO, Properties.READ, "ClipBridge challenge")
         self.control = await self.characteristic(p.CONTROL, Properties.WRITE, "ClipBridge control")
-        self.data = await self.characteristic(p.DATA, Properties.NOTIFY, "ClipBridge encrypted image")
+        self.data = await self.characteristic(p.DATA, Properties.NOTIFY, "ClipBridge encrypted clipboard")
         self.tokens.extend([
             (self.info, "read_requested", self.info.add_read_requested(self.on_read)),
             (self.control, "write_requested", self.control.add_write_requested(self.on_write)),
@@ -252,10 +280,19 @@ class Sender:
                 return False
             self.client_id = identity
             self.authenticated.add(identity)
+            self.text_clients.discard(identity)
             self.schedule(self.ready(identity))
             return True
         if identity != self.client_id or identity not in self.authenticated:
             return False
+        if command == p.CAPABILITIES:
+            if len(raw) != 2 or raw[1] != p.TEXT_CAPABILITY or not self.subscribed(identity):
+                return False
+            self.text_clients.add(identity)
+            LOG.info("iPad text capability negotiated")
+            if self.latest is not None and self.latest.kind == "text":
+                self.pending.set()
+            return True
         if command == p.ACK and len(raw) == p.HEADER.size:
             _, transfer_id, offset = p.HEADER.unpack(raw)
             if transfer_id == self.active_id and self.acked <= offset <= self.sent_offset:
@@ -279,6 +316,7 @@ class Sender:
             return True
         if command == p.STOP and len(raw) == 1:
             self.authenticated.discard(identity)
+            self.text_clients.discard(identity)
             self.client_id = None
             self.report(phase="waiting", detail="iPad 已停止接收，等待连接")
             self.progress.set()
@@ -293,7 +331,7 @@ class Sender:
         try:
             client = self.subscribed(identity)
             if client is not None and identity == self.client_id:
-                await self.notify(client, p.HEADER.pack(p.READY, 0, p.WINDOW))
+                await self.notify(client, p.HEADER.pack(p.READY, 0, p.WINDOW | p.READY_TEXT))
                 LOG.info("iPad authenticated; max notification value = %s bytes", client.max_notification_size)
                 self.report(phase="connected", detail="iPad 已连接", error="", pipeline=self.pipeline)
                 self.pending.set()
@@ -307,6 +345,7 @@ class Sender:
         if self.client_id and self.subscribed(self.client_id) is None:
             LOG.info("iPad disconnected; will require a fresh authentication on reconnect")
             self.authenticated.discard(self.client_id)
+            self.text_clients.discard(self.client_id)
             self.client_id = None
             self.report(phase="waiting", detail="iPad 已断开，等待重新连接")
             self.progress.set()
@@ -353,8 +392,14 @@ class Sender:
     def publish(self, snapshot, epoch=None):
         if self.capture_paused.is_set() or (epoch is not None and epoch != self.capture_epoch):
             return
+        if snapshot.kind == "text" and not self.sync_text:
+            return
         self.latest = snapshot
-        self.report(last_image=f"{snapshot[1]} × {snapshot[2]}，{len(snapshot[0]) / 1024:.1f} KiB")
+        if snapshot.kind == "text":
+            summary = f"文字，{len(snapshot.data)} 字节（不显示正文）"
+        else:
+            summary = f"图片 {snapshot.width} × {snapshot.height}，{len(snapshot.data) / 1024:.1f} KiB"
+        self.report(last_content=summary)
         self.pending.set()
 
     def monitor(self):
@@ -381,6 +426,19 @@ class Sender:
             try:
                 image = ImageGrab.grabclipboard()
                 if not isinstance(image, Image.Image):
+                    if not isinstance(image, list) and self.sync_text:
+                        text = read_text()
+                        if ctypes.windll.user32.GetClipboardSequenceNumber() != current:
+                            continue
+                        if text:
+                            if self.key.hex() in text.lower():
+                                LOG.info("Text containing the pairing key was not sent")
+                            else:
+                                encoded_text = text.encode("utf-8")
+                                self.loop.call_soon_threadsafe(self.publish,
+                                    Snapshot(encoded_text, 0, 0, captured_ms, detected, "text"), epoch)
+                                LOG.info("New clipboard text: %s UTF-8 bytes (memory only; content not logged)", len(encoded_text))
+                    last_digest = None
                     sequence = current
                     continue
                 source_width, source_height = image.size
@@ -394,13 +452,15 @@ class Sender:
                     encoded = encode_image(image, quality=self.quality, target_bytes=self.target_bytes)
                 encode_ms = (time.monotonic() - encode_started) * 1000
                 png, width, height = encoded.png, encoded.width, encoded.height
+                if ctypes.windll.user32.GetClipboardSequenceNumber() != current:
+                    continue
                 digest = hashlib.sha256(png).digest()
                 if digest != last_digest:
                     # Validate bounds before queuing or encrypting.
                     if len(png) > p.MAX_PNG or width > 8192 or height > 8192 or width * height > 32_000_000:
                         LOG.warning("Screenshot too large: %sx%s, %s bytes; use a smaller region", width, height, len(png))
                     else:
-                        self.loop.call_soon_threadsafe(self.publish, (png, width, height, captured_ms, detected), epoch)
+                        self.loop.call_soon_threadsafe(self.publish, Snapshot(png, width, height, captured_ms, detected), epoch)
                         LOG.info("New screenshot: %sx%s -> %sx%s; original=%.1f KiB, send=%.1f KiB; mode=%s; encode=%.0fms (memory only)",
                                  source_width, source_height, width, height, encoded.original_bytes / 1024,
                                  len(png) / 1024, encoded.method, encode_ms)
@@ -408,17 +468,25 @@ class Sender:
                             LOG.info("PNG remains above %.1f KiB target to preserve legibility; under-3s is not guaranteed", self.target_bytes / 1024)
                         last_digest = digest
                 sequence = current
+            except ValueError:
+                LOG.warning("Clipboard content is invalid or exceeds supported limits; not sent")
+                sequence = current
+                last_digest = None
             except Exception as error:
                 # Clipboard locks are transient. Retry the SAME sequence later.
-                LOG.debug("Clipboard temporarily unavailable: %s", error)
+                LOG.debug("Clipboard temporarily unavailable: %s", type(error).__name__)
 
     async def transfer(self, snapshot, identity):
-        png, width, height, captured_ms, detected = snapshot
+        if snapshot.kind == "text" and identity not in self.text_clients:
+            raise ValueError("Receiver has not negotiated text support; update the iPad receiver")
         client = self.subscribed(identity)
         if client is None:
             raise ConnectionError("Receiver is no longer subscribed")
         transfer_id = secrets.randbits(32)
-        wire = p.seal_image(self.key, png, width, height, captured_ms)
+        if snapshot.kind == "text":
+            wire = p.seal_text(self.key, snapshot.data.decode("utf-8"), snapshot.captured_ms)
+        else:
+            wire = p.seal_image(self.key, snapshot.data, snapshot.width, snapshot.height, snapshot.captured_ms)
         self.active_id = transfer_id
         self.acked = self.sent_offset = 0
         self.early_receipt = False
@@ -431,7 +499,7 @@ class Sender:
         batch = []
         last_progress = started
         LOG.info("Transfer start: %.1f KiB, max_notification=%s, pipeline=%s", len(wire) / 1024, client.max_notification_size, self.pipeline)
-        self.report(phase="sending", detail="正在发送截图", error="", pipeline=self.pipeline)
+        self.report(phase="sending", detail="正在发送文字" if snapshot.kind == "text" else "正在发送截图", error="", pipeline=self.pipeline)
         try:
             for frame in p.frames(transfer_id, wire, int(client.max_notification_size)):
                 if self.client_id != identity or identity not in self.authenticated:
@@ -479,7 +547,7 @@ class Sender:
             await asyncio.wait_for(self.received.wait(), 4)
             if self.client_id != identity:
                 raise ConnectionError("Receiver disconnected before receipt")
-            elapsed = time.monotonic() - detected
+            elapsed = time.monotonic() - snapshot.detected
             LOG.info("Receipt %.3fs after clipboard detection; BLE transfer %.3fs; under-3s=%s (not proof of successful paste)", elapsed, time.monotonic() - started, elapsed <= 3)
             self.report(phase="connected", detail=f"已收到回执，用时 {elapsed:.2f} 秒（请实际粘贴确认）", last_seconds=elapsed)
         finally:
@@ -499,6 +567,9 @@ class Sender:
             if self.latest is None or self.client_id is None or self.capture_paused.is_set():
                 continue
             snapshot, identity = self.latest, self.client_id
+            if snapshot.kind == "text" and identity not in self.text_clients:
+                self.report(phase="connected", detail="文字待发送：请更新 iPad 接收端并连接", error="")
+                continue
             try:
                 await self.transfer(snapshot, identity)
             except Exception as error:
@@ -529,7 +600,7 @@ async def main(options):
     if not options.smoke:
         print(f"Pairing key for iPad: {key.hex()}\n", flush=True)
     print("Enable Bluetooth on iPad, open the supplied Swift Playgrounds project, paste the key and tap Connect.")
-    print("Only screenshots taken AFTER this program starts are captured. Ctrl+C exits.\n", flush=True)
+    print("Only NEW clipboard images/plain text are captured. Text requires the updated iPad receiver. Ctrl+C exits.\n", flush=True)
     sender = Sender(key, pipeline=options.pipeline, quality=options.quality, target_bytes=options.target_kib * 1024)
     thread = None
     try:

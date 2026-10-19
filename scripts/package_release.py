@@ -11,10 +11,10 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.3.1-beta"
+VERSION = "0.4.0-beta"
 PUBLIC_ROOT = (
     ".gitignore", "README.md", "LICENSE", "CHANGELOG.md", "TESTING.md", "THIRD_PARTY.md",
-    "iPad操作说明.md", "简单使用说明.md", "requirements.txt", "requirements-build.txt",
+    "iPad操作说明.md", "简单使用说明.md", "文字同步升级说明.md", "PROTOCOL.md", "requirements.txt", "requirements-build.txt",
     "launcher.py", "Setup.ps1", "Build-Desktop.ps1", "Install-Desktop.ps1",
     "Start-ClipBridge-BLE.cmd", "Start-ClipBridge-BLE-Compatible.cmd", "ClipBridgeBLE.spec",
 )
@@ -135,16 +135,16 @@ def main():
     binary = ROOT / "dist" / "ClipBridgeBLE.exe"
     if not binary.is_file():
         raise ValueError("Build the Windows EXE first")
-    output = ROOT / "release"
-    output.mkdir(exist_ok=True)
+    output = ROOT / "release" / f"v{VERSION}"
+    output.mkdir(parents=True, exist_ok=True)
     notices = collect_notices(output)
     windows = output / f"ClipBridgeBLE-v{VERSION}-windows-x64.zip"
-    windows_docs = ("README.md", "简单使用说明.md", "iPad操作说明.md", "LICENSE", "THIRD_PARTY.md", "TESTING.md", "CHANGELOG.md", "Install-Desktop.ps1")
+    windows_docs = ("README.md", "简单使用说明.md", "iPad操作说明.md", "文字同步升级说明.md", "PROTOCOL.md", "LICENSE", "THIRD_PARTY.md", "TESTING.md", "CHANGELOG.md", "Install-Desktop.ps1")
     archive(windows, [(binary, "ClipBridgeBLE.exe")] + [(ROOT / name, name) for name in windows_docs]
             + [(path, path.relative_to(output).as_posix()) for path in notices])
     ipad = output / f"ClipBridgeBLE-v{VERSION}-ipad.zip"
     archive(ipad, [(path, path.relative_to(ROOT / "ipad").as_posix()) for path in files if "ipad" in path.relative_to(ROOT).parts]
-            + [(ROOT / "iPad操作说明.md", "iPad操作说明.md"), (ROOT / "LICENSE", "LICENSE")])
+            + [(ROOT / name, name) for name in ("iPad操作说明.md", "文字同步升级说明.md", "LICENSE")])
     source = output / f"ClipBridgeBLE-v{VERSION}-source.zip"
     archive(source, [(path, f"ClipBridge-Bluetooth/{path.relative_to(ROOT).as_posix()}") for path in files])
     checksums = output / "SHA256SUMS.txt"

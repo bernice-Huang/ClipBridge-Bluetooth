@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 
-VERSION = "0.3.1-beta"
+VERSION = "0.4.0-beta"
 APP_NAME = "ClipBridge 蓝牙"
 
 
@@ -59,6 +59,7 @@ class Settings:
     pipeline: int = 4
     target_kib: int = 32
     paused: bool = False
+    sync_text: bool = True
 
     def __post_init__(self):
         if self.quality not in ("balanced", "original"):
@@ -69,6 +70,8 @@ class Settings:
             raise ValueError("压缩目标配置无效")
         if type(self.paused) is not bool:
             raise ValueError("暂停配置无效")
+        if type(self.sync_text) is not bool:
+            raise ValueError("文字同步配置无效")
 
     @classmethod
     def load(cls, path):
@@ -102,7 +105,7 @@ class Settings:
 class Status:
     def __init__(self):
         self.lock = threading.Lock()
-        self.values = {"phase": "starting", "detail": "正在启动", "last_image": "暂无截图",
+        self.values = {"phase": "starting", "detail": "正在启动", "last_content": "暂无内容",
                        "last_receipt": "暂无回执", "paused": False, "pipeline": 4, "error": ""}
 
     def update(self, **values):

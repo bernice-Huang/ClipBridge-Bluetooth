@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>通过蓝牙接收你在 Dell 上截取的图片，尝试复制到本机剪贴板。</string>
+    <string>通过蓝牙接收你在 Windows 上复制的图片或文字，尝试写入本机剪贴板。</string>
     <key>UIBackgroundModes</key>
     <array><string>bluetooth-central</string></array>
 </dict>

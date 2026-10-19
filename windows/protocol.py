@@ -1,4 +1,4 @@
-"""ClipBridge BLE/1: small control frames, encrypted in-memory image payloads."""
+"""ClipBridge BLE/1: encrypted image payloads and negotiated UTF-8 text."""
 import hashlib
 import hmac
 import secrets
@@ -16,9 +16,14 @@ AUTH_CONTEXT = b"ClipBridge/auth/1"
 HEADER = struct.Struct("<BII")
 IMAGE_HEADER = struct.Struct("<4sIIQ")
 MAX_PNG = 2 * 1024 * 1024
+MAX_TEXT = 64 * 1024
 MAX_WIRE = MAX_PNG + IMAGE_HEADER.size + 28
 START, CHUNK, END, READY = 1, 2, 3, 4
 AUTH, ACK, RECEIPT, LATEST, STOP = 16, 17, 18, 19, 20
+CAPABILITIES = 21
+TEXT_CAPABILITY = 1
+# Old receivers ignore the READY value; new receivers inspect its upper bits.
+READY_TEXT = TEXT_CAPABILITY << 16
 WINDOW = 32
 
 
@@ -45,6 +50,30 @@ def open_image(key, wire):
     if magic != b"CBP1":
         raise ValueError("Invalid image payload")
     return plain[IMAGE_HEADER.size:], width, height, captured_ms
+
+
+def seal_text(key, text, captured_ms):
+    encoded = text.encode("utf-8")
+    if not encoded or len(encoded) > MAX_TEXT or "\0" in text:
+        raise ValueError("Text must contain 1..65536 UTF-8 bytes without NUL")
+    # Keep the 20-byte header and image wire format untouched. CBT1 identifies
+    # text, with both reserved dimension fields required to be zero.
+    plain = IMAGE_HEADER.pack(b"CBT1", 0, 0, captured_ms) + encoded
+    nonce = secrets.token_bytes(12)
+    return nonce + AESGCM(key).encrypt(nonce, plain, AAD)
+
+
+def open_text(key, wire):
+    if not (49 <= len(wire) <= MAX_TEXT + IMAGE_HEADER.size + 28):
+        raise ValueError("Invalid encrypted text size")
+    plain = AESGCM(key).decrypt(wire[:12], wire[12:], AAD)
+    magic, reserved1, reserved2, captured_ms = IMAGE_HEADER.unpack_from(plain)
+    if magic != b"CBT1" or reserved1 or reserved2:
+        raise ValueError("Invalid text payload header")
+    text = plain[IMAGE_HEADER.size:].decode("utf-8")
+    if not text or "\0" in text:
+        raise ValueError("Invalid text payload")
+    return text, captured_ms
 
 
 def frames(transfer_id, wire, mtu):

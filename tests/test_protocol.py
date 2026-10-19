@@ -10,7 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "windows"))
 from cryptography.exceptions import InvalidTag
 import protocol as p
-from sender import Sender, as_buffer, as_bytes
+from sender import Sender, Snapshot, as_buffer, as_bytes
 from winrt.windows.devices.bluetooth.genericattributeprofile import GattCommunicationStatus
 
 KEY = bytes(range(16))
@@ -158,7 +158,7 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(self.sender.accept_control("ipad", receipt))
         self.sender.notify = notify
         png = bytes(range(256)) * 4
-        await self.sender.transfer((png, 40, 30, 123, time.monotonic()), "ipad")
+        await self.sender.transfer(Snapshot(png, 40, 30, 123, time.monotonic()), "ipad")
         self.assertEqual(p.open_image(KEY, bytes(received)), (png, 40, 30, 123))
         self.assertIsNone(self.sender.active_id)
 
@@ -169,7 +169,7 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
             self.sender.client_id = None
         self.sender.notify = notify
         with self.assertRaises(ConnectionError):
-            await self.sender.transfer((b"x", 1, 1, 0, time.monotonic()), "ipad")
+            await self.sender.transfer(Snapshot(b"x", 1, 1, 0, time.monotonic()), "ipad")
         self.assertIsNone(self.sender.active_id)
 
     async def test_native_pipeline_order_window_and_completion(self):
@@ -213,7 +213,7 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
                     return future
                 self.sender.data.notify_value_for_subscribed_client_async = notify
                 png = bytes(range(256)) * 9
-                await self.sender.transfer((png, 100, 50, 123, time.monotonic()), "ipad")
+                await self.sender.transfer(Snapshot(png, 100, 50, 123, time.monotonic()), "ipad")
                 self.assertEqual(p.open_image(KEY, bytes(received)), (png, 100, 50, 123))
                 self.assertEqual((kinds[0], kinds[-1]), (p.START, p.END))
                 self.assertLessEqual(peak, depth)
@@ -249,19 +249,19 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.sender.quality, self.sender.pipeline, self.sender.target_bytes), ("original", 4, 40 * 1024))
 
     async def test_paused_capture_drops_latest_and_new_publication(self):
-        self.sender.latest = (b"x", 1, 1, 0, time.monotonic())
+        self.sender.latest = Snapshot(b"x", 1, 1, 0, time.monotonic())
         self.sender.set_capture_paused(True)
         self.assertIsNone(self.sender.latest)
-        self.sender.publish((b"y", 1, 1, 0, time.monotonic()))
+        self.sender.publish(Snapshot(b"y", 1, 1, 0, time.monotonic()))
         self.assertIsNone(self.sender.latest)
         self.sender.set_capture_paused(False)
-        self.sender.publish((b"z", 1, 1, 0, time.monotonic()))
+        self.sender.publish(Snapshot(b"z", 1, 1, 0, time.monotonic()))
         self.assertIsNotNone(self.sender.latest)
 
     async def test_status_updates_do_not_expose_key(self):
         values = []
         self.sender.on_status = lambda **status: values.append(status)
-        self.sender.publish((b"x", 1, 1, 0, time.monotonic()))
+        self.sender.publish(Snapshot(b"x", 1, 1, 0, time.monotonic()))
         self.assertTrue(values)
         self.assertNotIn(KEY.hex(), str(values))
 
@@ -280,7 +280,7 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         self.sender.set_capture_paused(True)
         with patch('sender.ctypes.windll.user32.GetClipboardSequenceNumber', return_value=42):
             self.sender.set_capture_paused(False)
-        self.sender.publish((b'x', 1, 1, 0, time.monotonic()), epoch)
+        self.sender.publish(Snapshot(b'x', 1, 1, 0, time.monotonic()), epoch)
         self.assertIsNone(self.sender.latest)
         self.assertFalse(self.sender.pending.is_set())
 
@@ -289,7 +289,7 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         client = self.sender.data.subscribed_clients[0]
         client.max_notification_size = 185
         with self.assertRaises(ValueError):
-            await self.sender.transfer((bytes(p.MAX_PNG + 1), 1, 1, 0, time.monotonic()), "ipad")
+            await self.sender.transfer(Snapshot(bytes(p.MAX_PNG + 1), 1, 1, 0, time.monotonic()), "ipad")
         self.assertIsNone(self.sender.active_id)
 
 

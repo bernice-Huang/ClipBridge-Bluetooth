@@ -12,6 +12,8 @@ private enum Wire {
     static let control = CBUUID(string: "8D6B3F02-E815-4C55-B109-45BDFFB271F0")
     static let data = CBUUID(string: "8D6B3F03-E815-4C55-B109-45BDFFB271F0")
     static let maxBytes = 2 * 1024 * 1024 + 48
+    static let maxText = 64 * 1024
+    static let readyText: UInt32 = 1 << 16
     static let window = 32
     static let aad = Data("ClipBridge/1".utf8)
     static let auth = Data("ClipBridge/auth/1".utf8)
@@ -53,6 +55,13 @@ private enum WireSelfTest {
               plain.dropFirst(20) == Data("vector".utf8) else { throw Failure.vector }
         let proof = HMAC<SHA256>.authenticationCode(for: Wire.auth + Data((0..<16).map { UInt8($0) }), using: key)
         guard Data(proof.prefix(16)) == Data(hex: "4d06a2c8ab55783e7134fe072b02c7f2") else { throw Failure.vector }
+        let textHex = "000102030405060708090a0bd02ef3ff661bf7544bd2618a76417108b3261ae6b7505d13439c1e919807ce05f5e6a99e90e7d2c24dfe458eaeecf7a0c56f8b69862b34a991f0311617bed155762aa85d67"
+        guard let textWire = Data(hex: textHex, expectedCount: 81) else { throw Failure.vector }
+        let textBox = try AES.GCM.SealedBox(combined: textWire)
+        let textPlain = try AES.GCM.open(textBox, using: key, authenticating: Wire.aad)
+        guard textPlain.prefix(4) == Data("CBT1".utf8), textPlain.u32(4) == 0,
+              textPlain.u32(8) == 0, textPlain.u64(12) == 123456,
+              String(data: textPlain.dropFirst(20), encoding: .utf8) == "你好，ClipBridge!\r\nLine 2\t🙂" else { throw Failure.vector }
     }
     enum Failure: Error { case vector }
 }
@@ -97,6 +106,8 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
     @Published var deliveryState = "尚未接收"
     @Published var clipboardState = "尚未尝试"
     @Published var image: UIImage?
+    @Published var text: String?
+    @Published var textSupport = "等待连接"
     @Published var events = [String]()
     let backgroundConfigured = (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] ?? []).contains("bluetooth-central")
     private var central: CBCentralManager?
@@ -114,7 +125,8 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
     private var payload = Data()
     private var packets = 0
     private var began: TimeInterval = 0
-    private var latestPNG: Data?
+    private enum ClipboardContent { case png(Data), text(String) }
+    private var latestContent: ClipboardContent?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     func log(_ message: String) {
@@ -154,6 +166,7 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
             central?.cancelPeripheralConnection(p)
         }
         ready = false; resetTransfer()
+        textSupport = "等待连接"
         status = "已停止"
     }
 
@@ -226,7 +239,7 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
     }
     func peripheral(_ p: CBPeripheral, didUpdateNotificationStateFor c: CBCharacteristic, error: Error?) {
         guard error == nil, c.isNotifying, let info else {
-            fail("无法订阅图片通知：\(error?.localizedDescription ?? "未开启")"); return
+            fail("无法订阅剪贴板通知：\(error?.localizedDescription ?? "未开启")"); return
         }
         status = "校验配对密钥…"; p.readValue(for: info)
     }
@@ -263,67 +276,90 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
         guard raw.count >= 9 else { fail("通知长度错误"); return }
         let kind = raw[raw.startIndex], id = raw.u32(1), value = Int(raw.u32(5))
         if kind == 4 {
-            ready = true; status = "已连接 · 等待 Dell 新截图"
+            ready = true; status = "已连接 · 等待新截图或文字"
             retry?.cancel(); reconnectDelay = 1; log("密钥认证成功，无需 IP 地址")
+            if UInt32(value) & Wire.readyText != 0 {
+                textSupport = "发送端支持文字同步"
+                write(Data([21, 1]))
+                log("已请求启用纯文本同步；正文不写入诊断记录")
+            } else {
+                textSupport = "旧版发送端：仅支持图片，请更新 Windows 程序"
+            }
             return
         }
         guard ready else { return }
         if kind == 1 {
             guard raw.count == 9, value > 48, value <= Wire.maxBytes else {
-                fail("图片超过 2 MiB 限制或帧格式错误"); return
+                fail("内容超过传输限制或帧格式错误"); return
             }
             resetTransfer(); transfer = id; total = value
             payload.reserveCapacity(value); began = ProcessInfo.processInfo.systemUptime
-            progress = 0; status = "接收截图…"
+            progress = 0; status = "接收剪贴板内容…"
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "ClipBridge receive") { [weak self] in
                 self?.log("系统后台执行时间到期，接收未完成")
                 self?.resetTransfer()
             }
             let timeout = DispatchWorkItem { [weak self] in
                 guard let self, self.transfer == id else { return }
-                self.log("接收超过 20 秒，请重新连接或接收最新截图")
+                self.log("接收超过 20 秒，请重新连接或接收最新内容")
                 self.resetTransfer(); self.status = "接收超时"
             }
             deadline = timeout; DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: timeout)
         } else if kind == 2 {
             guard transfer == id, value == payload.count, raw.count > 9,
-                  payload.count + raw.count - 9 <= total else { fail("图片分片不连续，已放弃本次传输"); return }
+                  payload.count + raw.count - 9 <= total else { fail("分片不连续，已放弃本次传输"); return }
             payload.append(raw.dropFirst(9)); packets += 1
             if packets % Wire.window == 0 || payload.count == total {
                 progress = Double(payload.count) / Double(total); ack(id)
             }
         } else if kind == 3 {
             guard transfer == id, raw.count == 9, value == total, payload.count == total, let key else {
-                fail("图片未传完整，不会写入剪贴板"); return
+                fail("内容未传完整，不会写入剪贴板"); return
             }
             do {
                 let box = try AES.GCM.SealedBox(combined: payload)
                 let plain = try AES.GCM.open(box, using: key, authenticating: Wire.aad)
-                guard plain.count > 20, plain.prefix(4) == Data("CBP1".utf8) else { throw ReceiveError.invalidImage }
-                let width = Int(plain.u32(4)), height = Int(plain.u32(8))
-                guard width > 0, height > 0, width <= 8192, height <= 8192,
-                      width * height <= 32_000_000 else { throw ReceiveError.invalidImage }
-                let png = Data(plain.dropFirst(20))
-                guard let decoded = UIImage(data: png), let pixels = decoded.cgImage,
-                      pixels.width == width, pixels.height == height else { throw ReceiveError.invalidImage }
-                latestPNG = png; image = decoded
+                guard plain.count > 20 else { throw ReceiveError.invalidContent }
+                let contentBytes = plain.count - 20
+                let summary: String
+                if plain.prefix(4) == Data("CBP1".utf8) {
+                    let width = Int(plain.u32(4)), height = Int(plain.u32(8))
+                    guard width > 0, height > 0, width <= 8192, height <= 8192,
+                          width * height <= 32_000_000 else { throw ReceiveError.invalidContent }
+                    let png = Data(plain.dropFirst(20))
+                    guard let decoded = UIImage(data: png), let pixels = decoded.cgImage,
+                          pixels.width == width, pixels.height == height else { throw ReceiveError.invalidContent }
+                    latestContent = .png(png); image = decoded; text = nil
+                    summary = "图片 \(width)×\(height)"
+                } else if plain.prefix(4) == Data("CBT1".utf8) {
+                    guard plain.u32(4) == 0, plain.u32(8) == 0, contentBytes <= Wire.maxText,
+                          let receivedText = String(data: plain.dropFirst(20), encoding: .utf8),
+                          !receivedText.isEmpty, !receivedText.contains("\0") else { throw ReceiveError.invalidContent }
+                    latestContent = .text(receivedText); text = receivedText; image = nil
+                    summary = "文字 \(contentBytes) 字节"
+                } else { throw ReceiveError.invalidContent }
                 let inBackground = UIApplication.shared.applicationState == .background
                 deliveryState = inBackground ? "后台（需到 Goodnotes 验证粘贴）" : "前台或正在切换"
                 copyLatest()
                 let elapsed = ProcessInfo.processInfo.systemUptime - began
-                duration = String(format: "%.3f 秒 · %.1f KiB（iPad 收到首帧至写入尝试）", elapsed, Double(png.count) / 1024)
-                log("完整接收 \(width)×\(height)，完成时\(inBackground ? "后台" : "前台/切换中")；仅确认写入调用已执行")
+                duration = String(format: "%.3f 秒 · %.1f KiB（iPad 收到首帧至写入尝试）", elapsed, Double(contentBytes) / 1024)
+                log("完整接收\(summary)，完成时\(inBackground ? "后台" : "前台/切换中")；仅确认写入调用已执行")
                 var receipt = Data([18]); receipt.appendU32(id)
                 receipt.append(UInt8((inBackground ? 1 : 0) | 2))
                 write(receipt); resetTransfer(); progress = 1
                 status = "已接收 · 请在 Goodnotes 实际粘贴验证"
-            } catch { fail("图片解密或完整性检查失败：\(error.localizedDescription)") }
+            } catch { fail("内容解密或完整性检查失败：\(error.localizedDescription)") }
         } else { fail("不支持的协议帧") }
     }
 
     func copyLatest() {
-        guard let latestPNG else { return }
-        UIPasteboard.general.setItems([[UTType.png.identifier: latestPNG]], options: [
+        guard let latestContent else { return }
+        let item: [String: Any]
+        switch latestContent {
+        case .png(let png): item = [UTType.png.identifier: png]
+        case .text(let text): item = [UTType.utf8PlainText.identifier: text]
+        }
+        UIPasteboard.general.setItems([item], options: [
             .localOnly: true, .expirationDate: Date().addingTimeInterval(600)
         ])
         // UIKit does not return a success boolean. Never label a background call as verified paste success.
@@ -336,5 +372,5 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
             UIApplication.shared.endBackgroundTask(backgroundTask); backgroundTask = .invalid
         }
     }
-    private enum ReceiveError: Error { case invalidImage }
+    private enum ReceiveError: Error { case invalidContent }
 }

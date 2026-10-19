@@ -10,8 +10,8 @@ let package = Package(
             name: "ClipBridge BLE",
             targets: ["AppModule"],
             bundleIdentifier: "local.clipbridge.ble.prototype",
-            displayVersion: "0.1",
-            bundleVersion: "1",
+            displayVersion: "0.4.0",
+            bundleVersion: "4",
             supportedDeviceFamilies: [.pad],
             supportedInterfaceOrientations: [.portrait, .landscapeLeft, .landscapeRight],
             additionalInfoPlistContentFilePath: "Info.plist"

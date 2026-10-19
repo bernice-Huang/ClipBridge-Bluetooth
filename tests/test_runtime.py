@@ -38,15 +38,24 @@ class RuntimeTests(unittest.TestCase):
     def test_settings_save_and_load(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "settings.json"
-            expected = Settings(quality="original", pipeline=1, target_kib=40, paused=True)
+            expected = Settings(quality="original", pipeline=1, target_kib=40, paused=True, sync_text=False)
             expected.save(path)
             self.assertEqual(Settings.load(path), expected)
             self.assertEqual(list(Path(folder).glob("*.tmp")), [])
 
     def test_settings_invalid_values_rejected(self):
-        for values in ({"quality": "bad"}, {"pipeline": 3}, {"pipeline": True}, {"paused": "false"}, {"target_kib": 1}):
+        for values in ({"quality": "bad"}, {"pipeline": 3}, {"pipeline": True}, {"paused": "false"}, {"target_kib": 1}, {"sync_text": "false"}):
             with self.assertRaises(ValueError):
                 Settings(**values)
+
+    def test_old_settings_get_text_default_without_changing_pause(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "settings.json"
+            path.write_text('{"paused":true,"pipeline":1}', encoding="utf-8")
+            settings = Settings.load(path)
+            self.assertTrue(settings.sync_text)
+            self.assertTrue(settings.paused)
+            self.assertEqual(settings.pipeline, 1)
 
     def test_bad_settings_do_not_silently_enable_capture(self):
         with tempfile.TemporaryDirectory() as folder:

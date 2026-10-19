@@ -18,8 +18,9 @@ class FakeSender:
     instances = queue.Queue()
     fail_start = False
 
-    def __init__(self, key, *, quality, pipeline, target_bytes, on_status):
+    def __init__(self, key, *, quality, pipeline, target_bytes, sync_text, on_status):
         self.quality, self.pipeline, self.target_bytes = quality, pipeline, target_bytes
+        self.sync_text = sync_text
         self.capture_paused = threading.Event()
         self.stop_monitor = threading.Event()
         self.started = threading.Event()
@@ -33,8 +34,9 @@ class FakeSender:
         self.capture_paused.set() if value else self.capture_paused.clear()
         self.configured.set()
 
-    def configure(self, *, quality, pipeline, target_bytes):
+    def configure(self, *, quality, pipeline, target_bytes, sync_text):
         self.quality, self.pipeline, self.target_bytes = quality, pipeline, target_bytes
+        self.sync_text = sync_text
 
     async def start(self):
         self.instances.put(self)
@@ -77,16 +79,18 @@ class ControllerTests(unittest.TestCase):
                 first = FakeSender.instances.get(timeout=3)
                 self.assertTrue(first.started.wait(2))
                 first.configured.clear()
-                controller.configure(replace(Settings(), quality="original", pipeline=1, paused=True))
+                controller.configure(replace(Settings(), quality="original", pipeline=1, paused=True, sync_text=False))
                 self.assertTrue(first.configured.wait(2))
                 self.assertTrue(first.capture_paused.is_set())
                 self.assertEqual((first.quality, first.pipeline), ("original", 1))
+                self.assertFalse(first.sync_text)
                 controller.restart()
                 second = FakeSender.instances.get(timeout=3)
                 self.assertTrue(first.closed.wait(2))
                 self.assertTrue(second.started.wait(2))
                 self.assertTrue(second.capture_paused.is_set())
                 self.assertEqual(second.pipeline, 1)
+                self.assertFalse(second.sync_text)
             finally:
                 controller.close()
             self.assertFalse(controller.thread.is_alive())

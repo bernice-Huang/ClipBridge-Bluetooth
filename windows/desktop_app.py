@@ -1,4 +1,4 @@
-"""Windows desktop shell. The validated BLE/image wire protocol stays unchanged."""
+"""Windows desktop shell for image and negotiated plain-text clipboard sync."""
 import argparse
 import asyncio
 from dataclasses import replace
@@ -69,7 +69,8 @@ class Controller:
             with self.lock:
                 settings = self.settings
             sender = Sender(self.key, quality=settings.quality, pipeline=settings.pipeline,
-                            target_bytes=settings.target_kib * 1024, on_status=self.status.update)
+                            target_bytes=settings.target_kib * 1024, sync_text=settings.sync_text,
+                            on_status=self.status.update)
             self.sender = sender
             sender.set_capture_paused(settings.paused)
             monitor = None
@@ -131,7 +132,7 @@ class Controller:
         def apply():
             if self.sender is not None:
                 self.sender.configure(quality=settings.quality, pipeline=settings.pipeline,
-                                      target_bytes=settings.target_kib * 1024)
+                                      target_bytes=settings.target_kib * 1024, sync_text=settings.sync_text)
                 self.sender.set_capture_paused(settings.paused)
         self.call(apply)
 
@@ -169,7 +170,7 @@ class DesktopApp:
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.title(f"{APP_NAME} {VERSION}")
-        self.root.geometry("540x440")
+        self.root.geometry("540x490")
         self.root.protocol("WM_DELETE_WINDOW", self.root.withdraw)
         self.details = tk.StringVar()
         self.key_text = tk.StringVar(value="点击‘显示密钥’后查看")
@@ -181,26 +182,27 @@ class DesktopApp:
         row = ttk.Frame(panel); row.pack(anchor="w", pady=8)
         ttk.Button(row, text="显示密钥", command=self.show_key).pack(side="left", padx=(0, 8))
         ttk.Button(row, text="复制密钥", command=self.copy_key, state="disabled" if smoke else "normal").pack(side="left")
-        ttk.Label(panel, text="复制密钥会覆盖 Windows 剪贴板；日志不包含密钥。", wraplength=490).pack(anchor="w")
+        ttk.Label(panel, text="复制密钥会覆盖 Windows 剪贴板；含本机密钥的文字不会自动发送。", wraplength=490).pack(anchor="w")
         buttons = ttk.Frame(panel); buttons.pack(anchor="w", pady=14)
         self.pause_button = ttk.Button(buttons, command=self.toggle_pause)
         self.pause_button.pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="重启蓝牙发送端", command=self.controller.restart).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="打开诊断日志", command=self.open_log).pack(side="left")
-        ttk.Label(panel, text="关闭此窗口只隐藏到托盘。\n图片仍仅在内存中；请到 Goodnotes 实际粘贴确认。", wraplength=490).pack(anchor="w")
+        ttk.Label(panel, text="关闭此窗口只隐藏到托盘。\n图片、文字仅在内存中；复制密码等敏感内容前请暂停捕获或关闭文字同步。", wraplength=490).pack(anchor="w")
         item = pystray.MenuItem
         def action(fn):
             return lambda _icon, _item: self.commands.put(fn)
         self.icon = pystray.Icon("ClipBridgeBLE", icon_image(), APP_NAME, menu=pystray.Menu(
             item("显示状态", action(self.show), default=True),
-            item("暂停截图捕获", action(self.toggle_pause), checked=lambda _item: self.settings.paused),
+            item("暂停剪贴板捕获", action(self.toggle_pause), checked=lambda _item: self.settings.paused),
+            item("同步文字", action(lambda: self.change(sync_text=not self.settings.sync_text)), checked=lambda _item: self.settings.sync_text),
             item("画质", pystray.Menu(
                 item("均衡（已验证的适度压缩）", action(lambda: self.change(quality="balanced")), checked=lambda _item: self.settings.quality == "balanced", radio=True),
                 item("原图（可能较慢）", action(lambda: self.change(quality="original")), checked=lambda _item: self.settings.quality == "original", radio=True))),
             item("发送模式", pystray.Menu(
                 item("快速队列", action(lambda: self.change(pipeline=4)), checked=lambda _item: self.settings.pipeline == 4, radio=True),
                 item("逐包兼容", action(lambda: self.change(pipeline=1)), checked=lambda _item: self.settings.pipeline == 1, radio=True))),
-            item("重新发送最新图", action(self.controller.resend)),
+            item("重新发送最新内容", action(self.controller.resend)),
             item("重启蓝牙发送端", action(self.controller.restart)),
             item("开机自启动", action(self.toggle_startup), checked=lambda _item: startup.enabled(), enabled=getattr(sys, "frozen", False) and not smoke),
             item("打开诊断日志", action(self.open_log)),
@@ -236,10 +238,11 @@ class DesktopApp:
             paused = status["paused"]
             mode = "逐包兼容" if status["pipeline"] == 1 else f"队列 {status['pipeline']}"
             self.details.set(f"状态：{'捕获已暂停；' if paused else ''}{status['detail']}\n"
-                             f"最近截图：{status['last_image']}\n最近回执：{status['last_receipt']}\n"
+                             f"最近内容：{status['last_content']}\n最近回执：{status['last_receipt']}\n"
+                             f"文字同步：{'开启（需新版 iPad 接收端）' if self.settings.sync_text else '关闭'}\n"
                              f"画质：{'均衡' if self.settings.quality == 'balanced' else '原图'}；实际发送：{mode}\n"
                              f"{('错误：' + status['error']) if status['error'] else '不需要 Wi-Fi、热点或修改 IP 地址。'}")
-            self.pause_button.configure(text="恢复截图捕获" if paused else "暂停截图捕获")
+            self.pause_button.configure(text="恢复剪贴板捕获" if paused else "暂停剪贴板捕获")
             icon_state = (status["phase"], paused, status["detail"])
             if icon_state != self.last_icon_state:
                 colors = {"connected": "#1d9b55", "sending": "#ef8c12", "error": "#ca3342"}
@@ -303,10 +306,12 @@ async def self_test():
     key = bytes(range(16))  # Synthetic test key, never the user's pairing secret.
     wire = protocol.seal_image(key, encoded.png, encoded.width, encoded.height, 0)
     assert protocol.open_image(key, wire)[0] == encoded.png
+    text = "ClipBridge 中文\r\nEmoji 🙂"
+    assert protocol.open_text(key, protocol.seal_text(key, text, 0)) == (text, 0)
     assert as_bytes(as_buffer(b"package-test")) == b"package-test"
     adapter = await BluetoothAdapter.get_default_async()
     return {"version": VERSION, "frozen": bool(getattr(sys, "frozen", False)),
-            "crypto": "ok", "png": "ok", "winrt_buffer": "ok", "tk": tk.TkVersion,
+            "crypto": "ok", "png": "ok", "text": "ok", "winrt_buffer": "ok", "tk": tk.TkVersion,
             "adapter_found": adapter is not None,
             "peripheral_supported": adapter.is_peripheral_role_supported if adapter else None}
 
