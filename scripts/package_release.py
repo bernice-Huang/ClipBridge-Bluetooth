@@ -16,9 +16,9 @@ PUBLIC_ROOT = (
     ".gitignore", "README.md", "LICENSE", "CHANGELOG.md", "Install-Desktop.ps1",
     "requirements.txt", "requirements-build.txt",
 )
-PUBLIC_TREES = {"windows": {".py"}, "tests": {".py"},
+PUBLIC_TREES = {"windows": {".py", ".md"}, "tests": {".py"},
                 "scripts": {".py", ".ps1", ".cmd", ".spec"},
-                "docs": {".md"}, "ipad": {".swift", ".plist"}}
+                "docs": {".md"}, "ipad": {".swift", ".plist", ".md"}}
 FORBIDDEN = {"session.json", "settings.json", ".env", "app.log", "验证记录.md"}
 
 
@@ -150,7 +150,8 @@ def main():
     archive(windows, [(binary, "ClipBridgeBLE.exe"), (ROOT / "Install-Desktop.ps1", "Install-Desktop.ps1")] + docs
             + [(path, path.relative_to(output).as_posix()) for path in notices])
     ipad = output / f"ClipBridgeBLE-v{VERSION}-ipad.zip"
-    archive(ipad, [(path, path.relative_to(ROOT / "ipad").as_posix()) for path in files if "ipad" in path.relative_to(ROOT).parts]
+    project = ROOT / "ipad" / "ClipBridgeBLE.swiftpm"
+    archive(ipad, [(path, path.relative_to(ROOT / "ipad").as_posix()) for path in files if path.is_relative_to(project)]
             + docs)
     source = output / f"ClipBridgeBLE-v{VERSION}-source.zip"
     archive(source, [(path, f"ClipBridge-Bluetooth/{path.relative_to(ROOT).as_posix()}") for path in files])

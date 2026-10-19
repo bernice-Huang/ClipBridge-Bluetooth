@@ -80,6 +80,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-Desktop.ps1
 | 升级图片＋文字版本 | [升级指南](docs/user/upgrade-v0.4.md) |
 | 连接不上、无法粘贴 | [故障排查](docs/user/troubleshooting.md) |
 | 修改源码、构建 EXE | [开发指南](docs/development/build.md) |
+| 看懂源码、找到要改的模块 | [源码地图](docs/development/source-map.md) |
 | 查看全部文档 | [文档目录](docs/README.md) |
 
 普通用户只需要下载发布包；仓库中的 `windows/`、`ipad/` 是源码，`scripts/` 是开发脚本，`tests/` 是自动测试，`docs/` 是说明文档。

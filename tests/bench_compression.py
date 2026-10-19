@@ -6,7 +6,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "windows"))
-from image_codec import encode_image
+from clipboard.image_codec import encode_image
 from compression_samples import document_sample, noise_sample
 
 

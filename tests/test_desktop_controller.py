@@ -10,8 +10,8 @@ from unittest.mock import patch
 import asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "windows"))
-from desktop_app import Controller
-from runtime import Settings, Status
+from app.controller import Controller
+from app.runtime import Settings, Status
 
 
 class FakeSender:
@@ -21,8 +21,7 @@ class FakeSender:
     def __init__(self, key, *, quality, pipeline, target_bytes, sync_text, on_status):
         self.quality, self.pipeline, self.target_bytes = quality, pipeline, target_bytes
         self.sync_text = sync_text
-        self.capture_paused = threading.Event()
-        self.stop_monitor = threading.Event()
+        self.capture = SimpleNamespace(paused=threading.Event(), stop=threading.Event(), run=self.monitor)
         self.started = threading.Event()
         self.configured = threading.Event()
         self.closed = threading.Event()
@@ -31,7 +30,7 @@ class FakeSender:
         self.fail_start = type(self).fail_start
 
     def set_capture_paused(self, value):
-        self.capture_paused.set() if value else self.capture_paused.clear()
+        self.capture.paused.set() if value else self.capture.paused.clear()
         self.configured.set()
 
     def configure(self, *, quality, pipeline, target_bytes, sync_text):
@@ -45,13 +44,13 @@ class FakeSender:
 
     def monitor(self):
         self.started.set()
-        self.stop_monitor.wait(5)
+        self.capture.stop.wait(5)
 
     async def run(self):
         await asyncio.Event().wait()
 
     async def close(self):
-        self.stop_monitor.set()
+        self.capture.stop.set()
         self.closed.set()
 
 
@@ -73,7 +72,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_background_worker_configure_restart_and_close(self):
         controller = Controller(bytes(16), Settings(), Status())
-        with patch("desktop_app.Sender", FakeSender):
+        with patch("app.controller.Sender", FakeSender):
             controller.start()
             try:
                 first = FakeSender.instances.get(timeout=3)
@@ -81,14 +80,14 @@ class ControllerTests(unittest.TestCase):
                 first.configured.clear()
                 controller.configure(replace(Settings(), quality="original", pipeline=1, paused=True, sync_text=False))
                 self.assertTrue(first.configured.wait(2))
-                self.assertTrue(first.capture_paused.is_set())
+                self.assertTrue(first.capture.paused.is_set())
                 self.assertEqual((first.quality, first.pipeline), ("original", 1))
                 self.assertFalse(first.sync_text)
                 controller.restart()
                 second = FakeSender.instances.get(timeout=3)
                 self.assertTrue(first.closed.wait(2))
                 self.assertTrue(second.started.wait(2))
-                self.assertTrue(second.capture_paused.is_set())
+                self.assertTrue(second.capture.paused.is_set())
                 self.assertEqual(second.pipeline, 1)
                 self.assertFalse(second.sync_text)
             finally:
@@ -98,12 +97,12 @@ class ControllerTests(unittest.TestCase):
 
     def test_persisted_pause_applies_before_monitor_starts(self):
         controller = Controller(bytes(16), Settings(paused=True), Status())
-        with patch("desktop_app.Sender", FakeSender):
+        with patch("app.controller.Sender", FakeSender):
             controller.start()
             try:
                 sender = FakeSender.instances.get(timeout=3)
                 self.assertTrue(sender.started.wait(2))
-                self.assertTrue(sender.capture_paused.is_set())
+                self.assertTrue(sender.capture.paused.is_set())
             finally:
                 controller.close()
             self.assertFalse(controller.thread.is_alive())
@@ -112,7 +111,7 @@ class ControllerTests(unittest.TestCase):
         FakeSender.fail_start = True
         status = ErrorStatus()
         controller = Controller(bytes(16), Settings(), status)
-        with patch("desktop_app.Sender", FakeSender):
+        with patch("app.controller.Sender", FakeSender):
             controller.start()
             try:
                 sender = FakeSender.instances.get(timeout=3)

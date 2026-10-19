@@ -2,7 +2,7 @@
 import ctypes
 from ctypes import wintypes
 
-from protocol import MAX_TEXT
+from ble.protocol import MAX_TEXT
 
 CF_UNICODETEXT = 13
 CF_HDROP = 15

@@ -23,7 +23,7 @@ def legacy_session_path():
     # An installed/frozen EXE must NEVER store its key in its extraction folder.
     if getattr(sys, "frozen", False):
         return None
-    return Path(__file__).resolve().parents[1] / "session.json"
+    return Path(__file__).resolve().parents[2] / "session.json"
 
 
 def read_key(path):

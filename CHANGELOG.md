@@ -2,6 +2,10 @@
 
 ## Unreleased — repository organization
 
+- Windows source split into `app/`, `clipboard/` and `ble/` packages; clipboard monitoring and desktop-worker lifecycle no longer live in the UI/transport modules. CLI entry is `windows/console.py`.
+- iPad source grouped into App, Bluetooth, Protocol and Storage, preserving wire constants, receive logic, keychain identifiers and UI behavior.
+- Added per-platform source guides, module map and boundary tests. Removed the unused duplicate key loader; active key migration still uses the original project-root location.
+
 - User-first README with direct Windows/iPad downloads and a three-step setup path.
 - User and developer guides grouped under `docs/`, including a documentation index and troubleshooting guide.
 - Build/setup/console scripts and the PyInstaller spec grouped under `scripts/`; source launcher moved to `windows/` with paths updated.

@@ -8,7 +8,7 @@ import unittest
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "windows"))
-from image_codec import encode_image, png_bytes, MIN_SCALE
+from clipboard.image_codec import encode_image, png_bytes, MIN_SCALE
 from compression_samples import document_sample, noise_sample
 
 

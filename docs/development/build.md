@@ -2,6 +2,8 @@
 
 只想使用程序，请回到[首页](../../README.md)下载发布包；以下是给修改源码、调试或自己构建的开发者的说明。
 
+初读源码建议先看[源码地图](source-map.md)；Windows 分为 `app/`、`clipboard/`、`ble/`，iPad 分为 `App/`、`Bluetooth/`、`Protocol/`、`Storage/`。
+
 ## 仓库布局
 
 ```text
@@ -13,7 +15,7 @@ ClipBridge-Bluetooth/
 ├── docs/
 │   ├── user/                 # 安装、日常使用、升级和排错
 │   └── development/          # 本指南、协议、测试和许可
-├── windows/                  # Windows 发送端，含 launcher.py
+├── windows/                  # launcher/console 入口，app/clipboard/ble 三层
 ├── ipad/                     # Swift Playgrounds 接收工程
 ├── scripts/                  # 环境、构建、调试启动及打包
 ├── tests/                    # 合成数据自动测试

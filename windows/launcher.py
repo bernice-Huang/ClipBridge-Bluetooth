@@ -8,7 +8,7 @@ if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 try:
-    from desktop_app import main
+    from app.desktop import main
     raise SystemExit(main())
 except Exception as error:
     for option in ("--self-test", "--ui-smoke"):

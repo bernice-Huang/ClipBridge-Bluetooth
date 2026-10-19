@@ -31,6 +31,8 @@ Pre-release recheck (2026-10-19): all 89 automated tests passed again, and `pip 
 
 Repository-organization check (2026-10-19): 96 tests passed, including document links, extracted-package navigation, allowlisted layout and the relocated source launcher. PowerShell scripts parsed successfully, the relocated PyInstaller spec built successfully, and the rebuilt EXE passed self-test and tray smoke without clipboard capture. No published assets/tags or installed desktop configuration were changed by the repository reorganization.
 
+Source-modularization check (2026-10-19): 106 tests passed, including module boundaries, independent capture state, immutable snapshots and preservation of the project-root legacy key path. The refactored Windows EXE built and passed crypto/image/text/WinRT self-test and tray smoke. Protocol/image-codec/startup implementations were compared unchanged; 16 core BLE/auth/transfer method bodies and 11 desktop UI method bodies matched after documentation/type annotations were excluded. Six extracted Swift declaration blocks matched after imports, file-private scope and MARK comments were normalized. These are structural/equivalence checks, **not Swift compilation or new device validation**. Published tags/assets and the installed desktop app are unchanged.
+
 The v0.4.0-beta Windows x64 EXE also passed its frozen AES-GCM/PNG/Unicode-text/WinRT self-test and tray/Tk event-loop smoke. A 2-second GATT advertising smoke succeeded without reading clipboard contents. The local desktop binary was updated with an old-EXE backup; private key, settings and existing startup registration were checked unchanged. These are Windows checks, not end-to-end iPad validation.
 
 Package-only checks:

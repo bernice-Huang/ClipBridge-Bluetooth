@@ -8,6 +8,6 @@ if not exist ".venv\Scripts\python.exe" (
     pause
     exit /b 1
 )
-".venv\Scripts\python.exe" -X utf8 "windows\sender.py" --pipeline 1
+".venv\Scripts\python.exe" -X utf8 "windows\console.py" --pipeline 1
 echo.
 pause

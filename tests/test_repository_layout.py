@@ -29,7 +29,7 @@ class RepositoryLayoutTests(unittest.TestCase):
                          ["LICENSE", "CHANGELOG.md", "docs/README.md"])
 
     def test_all_relative_document_links_exist(self):
-        docs = [ROOT / "README.md", ROOT / "CHANGELOG.md", *sorted((ROOT / "docs").rglob("*.md"))]
+        docs = [path for path in release.public_files() if path.suffix == ".md"]
         for doc in docs:
             for link in local_links(doc.read_text(encoding="utf-8")):
                 with self.subTest(document=doc.name, link=link):
@@ -72,6 +72,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         for name in ("Start-ClipBridge-BLE.cmd", "Start-ClipBridge-BLE-Compatible.cmd"):
             script = (ROOT / "scripts" / name).read_text(encoding="utf-8")
             self.assertIn('cd /d "%~dp0.."', script)
+            self.assertIn('"windows\\console.py"', script)
         for name in ("Setup.ps1", "Build-Desktop.ps1"):
             self.assertIn("Split-Path -Parent $PSScriptRoot", (ROOT / "scripts" / name).read_text(encoding="utf-8"))
         spec = (ROOT / "scripts/ClipBridgeBLE.spec").read_text(encoding="utf-8")
@@ -80,8 +81,9 @@ class RepositoryLayoutTests(unittest.TestCase):
 
     def test_source_entrypoint_can_import_from_other_working_directory(self):
         # --help exits before clipboard capture, configuration or BLE setup.
-        with tempfile.TemporaryDirectory(prefix="clipbridge-entry-") as folder:
-            result = subprocess.run([sys.executable, "-X", "utf8", str(ROOT / "windows/launcher.py"), "--help"],
-                                    cwd=folder, capture_output=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
-        self.assertIn(b"--self-test", result.stdout)
+        for entry, option in (("launcher.py", b"--self-test"), ("console.py", b"--pipeline")):
+            with self.subTest(entry=entry), tempfile.TemporaryDirectory(prefix="clipbridge-entry-") as folder:
+                result = subprocess.run([sys.executable, "-X", "utf8", str(ROOT / "windows" / entry), "--help"],
+                                        cwd=folder, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
+            self.assertIn(option, result.stdout)

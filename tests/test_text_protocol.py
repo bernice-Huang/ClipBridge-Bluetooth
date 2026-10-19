@@ -12,8 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "windows"))
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PIL import Image
-import protocol as p
-from sender import Sender, Snapshot
+from ble import protocol as p
+from ble.sender import Sender
+from clipboard.models import Snapshot
 
 KEY = bytes(range(16))
 TEXT = "你好，ClipBridge!\r\nLine 2\t🙂"
@@ -57,12 +58,15 @@ class TextWireTests(unittest.TestCase):
                 p.open_text(KEY, wire)
 
     def test_swift_self_test_vector_matches_python(self):
-        swift = (Path(__file__).resolve().parents[1] / "ipad/ClipBridgeBLE.swiftpm/Sources/BLEBridge.swift").read_text(encoding="utf-8")
+        sources = Path(__file__).resolve().parents[1] / "ipad/ClipBridgeBLE.swiftpm/Sources"
+        swift = (sources / "Protocol/WireSelfTest.swift").read_text(encoding="utf-8")
+        wire = (sources / "Protocol/Wire.swift").read_text(encoding="utf-8")
+        bridge = (sources / "Bluetooth/BLEBridge.swift").read_text(encoding="utf-8")
         hex_value = re.search(r'let textHex = "([0-9a-f]+)"', swift).group(1)
         self.assertEqual(p.open_text(KEY, bytes.fromhex(hex_value)), (TEXT, 123456))
-        self.assertIn("static let maxText = 64 * 1024", swift)
-        self.assertIn("UTType.utf8PlainText.identifier: text", swift)
-        self.assertIn("write(Data([21, 1]))", swift)
+        self.assertIn("static let maxText = 64 * 1024", wire)
+        self.assertIn("UTType.utf8PlainText.identifier: text", bridge)
+        self.assertIn("write(Data([21, 1]))", bridge)
 
 
 class TextSenderTests(unittest.IsolatedAsyncioTestCase):
@@ -83,11 +87,11 @@ class TextSenderTests(unittest.IsolatedAsyncioTestCase):
         return Snapshot(text.encode("utf-8"), 0, 0, 123456, time.monotonic(), "text")
 
     async def monitor_once(self, *, image=None, text=TEXT, sequence=(0, 1, 1), loops=1):
-        with patch("sender.ctypes.windll.user32.GetClipboardSequenceNumber", side_effect=sequence), \
-                patch.object(self.sender.stop_monitor, "wait", side_effect=[False] * loops + [True]), \
-                patch("sender.ImageGrab.grabclipboard", return_value=image), \
-                patch("sender.read_text", return_value=text) as read:
-            self.sender.monitor()
+        with patch("clipboard.monitor.clipboard_sequence", side_effect=sequence), \
+                patch.object(self.sender.capture.stop, "wait", side_effect=[False] * loops + [True]), \
+                patch("clipboard.monitor.ImageGrab.grabclipboard", return_value=image), \
+                patch("clipboard.monitor.read_text", return_value=text) as read:
+            self.sender.capture.run()
         await asyncio.sleep(0)
         return read
 
@@ -200,9 +204,9 @@ class TextSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.sender.latest)
 
     async def test_text_toggle_keeps_images_but_excludes_old_queued_text(self):
-        epoch = self.sender.capture_epoch
+        epoch = self.sender.capture.epoch
         self.sender.publish(self.snapshot())
-        with patch("sender.ctypes.windll.user32.GetClipboardSequenceNumber", return_value=42):
+        with patch("clipboard.monitor.clipboard_sequence", return_value=42):
             self.sender.configure(quality="balanced", pipeline=1, target_bytes=32 * 1024, sync_text=False)
             self.assertIsNone(self.sender.latest)
             self.sender.publish(self.snapshot())
@@ -214,7 +218,7 @@ class TextSenderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.sender.latest.kind, "image")
 
     async def test_disabled_text_reader_is_not_called(self):
-        self.sender.sync_text = False
+        self.sender.capture.sync_text = False
         read = await self.monitor_once(sequence=(0, 1))
         read.assert_not_called()
 
@@ -229,11 +233,11 @@ class TextSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.sender.latest)
 
     async def test_busy_read_retries_same_sequence(self):
-        with patch("sender.ctypes.windll.user32.GetClipboardSequenceNumber", side_effect=(0, 1, 1, 1)), \
-                patch.object(self.sender.stop_monitor, "wait", side_effect=(False, False, True)), \
-                patch("sender.ImageGrab.grabclipboard", return_value=None), \
-                patch("sender.read_text", side_effect=(OSError("busy"), TEXT)) as read:
-            self.sender.monitor()
+        with patch("clipboard.monitor.clipboard_sequence", side_effect=(0, 1, 1, 1)), \
+                patch.object(self.sender.capture.stop, "wait", side_effect=(False, False, True)), \
+                patch("clipboard.monitor.ImageGrab.grabclipboard", return_value=None), \
+                patch("clipboard.monitor.read_text", side_effect=(OSError("busy"), TEXT)) as read:
+            self.sender.capture.run()
         await asyncio.sleep(0)
         self.assertEqual(read.call_count, 2)
         self.assertEqual(self.sender.latest.data.decode("utf-8"), TEXT)

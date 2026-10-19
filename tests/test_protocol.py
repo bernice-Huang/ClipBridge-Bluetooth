@@ -9,8 +9,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "windows"))
 from cryptography.exceptions import InvalidTag
-import protocol as p
-from sender import Sender, Snapshot, as_buffer, as_bytes
+from ble import protocol as p
+from ble.sender import Sender
+from ble.buffers import as_buffer, as_bytes
+from clipboard.models import Snapshot
 from winrt.windows.devices.bluetooth.genericattributeprofile import GattCommunicationStatus
 
 KEY = bytes(range(16))
@@ -266,19 +268,19 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(KEY.hex(), str(values))
 
     async def test_quick_pause_resume_excludes_paused_clipboard(self):
-        with patch('sender.ctypes.windll.user32.GetClipboardSequenceNumber', return_value=42):
+        with patch('clipboard.monitor.clipboard_sequence', return_value=42):
             self.sender.set_capture_paused(True)
             self.sender.set_capture_paused(False)
-            with patch.object(self.sender.stop_monitor, 'wait', side_effect=[False, True]):
-                with patch('sender.ImageGrab.grabclipboard') as grab:
-                    self.sender.monitor()
+            with patch.object(self.sender.capture.stop, 'wait', side_effect=[False, True]):
+                with patch('clipboard.monitor.ImageGrab.grabclipboard') as grab:
+                    self.sender.capture.run()
                     grab.assert_not_called()
-        self.assertIsNone(self.sender.capture_baseline)
+        self.assertIsNone(self.sender.capture.baseline)
 
     async def test_capture_before_pause_cannot_publish_after_resume(self):
-        epoch = self.sender.capture_epoch
+        epoch = self.sender.capture.epoch
         self.sender.set_capture_paused(True)
-        with patch('sender.ctypes.windll.user32.GetClipboardSequenceNumber', return_value=42):
+        with patch('clipboard.monitor.clipboard_sequence', return_value=42):
             self.sender.set_capture_paused(False)
         self.sender.publish(Snapshot(b'x', 1, 1, 0, time.monotonic()), epoch)
         self.assertIsNone(self.sender.latest)

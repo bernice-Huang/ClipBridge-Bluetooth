@@ -7,8 +7,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "windows"))
-import clipboard_text as c
-from protocol import MAX_TEXT
+import clipboard.text as c
+from ble.protocol import MAX_TEXT
 
 
 class ClipboardTextTests(unittest.TestCase):

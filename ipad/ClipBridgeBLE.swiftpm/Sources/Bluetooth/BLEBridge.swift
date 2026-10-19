@@ -2,98 +2,8 @@ import Foundation
 import Combine
 import CoreBluetooth
 import CryptoKit
-import Security
 import UIKit
 import UniformTypeIdentifiers
-
-private enum Wire {
-    static let service = CBUUID(string: "8D6B3F00-E815-4C55-B109-45BDFFB271F0")
-    static let info = CBUUID(string: "8D6B3F01-E815-4C55-B109-45BDFFB271F0")
-    static let control = CBUUID(string: "8D6B3F02-E815-4C55-B109-45BDFFB271F0")
-    static let data = CBUUID(string: "8D6B3F03-E815-4C55-B109-45BDFFB271F0")
-    static let maxBytes = 2 * 1024 * 1024 + 48
-    static let maxText = 64 * 1024
-    static let readyText: UInt32 = 1 << 16
-    static let window = 32
-    static let aad = Data("ClipBridge/1".utf8)
-    static let auth = Data("ClipBridge/auth/1".utf8)
-}
-
-private extension Data {
-    func u32(_ at: Int) -> UInt32 {
-        (0..<4).reduce(UInt32(0)) { $0 | (UInt32(self[startIndex + at + $1]) << ($1 * 8)) }
-    }
-    func u64(_ at: Int) -> UInt64 {
-        (0..<8).reduce(UInt64(0)) { $0 | (UInt64(self[startIndex + at + $1]) << ($1 * 8)) }
-    }
-    mutating func appendU32(_ value: UInt32) {
-        for shift in stride(from: 0, to: 32, by: 8) { append(UInt8((value >> shift) & 255)) }
-    }
-    init?(hex: String, expectedCount: Int = 16) {
-        guard hex.count == expectedCount * 2 else { return nil }
-        var bytes = [UInt8]()
-        var index = hex.startIndex
-        for _ in 0..<expectedCount {
-            let end = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<end], radix: 16) else { return nil }
-            bytes.append(byte); index = end
-        }
-        self.init(bytes)
-    }
-}
-
-private enum WireSelfTest {
-    // Synthetic interoperability vector; NOT the user's real pairing key or image.
-    static func run() throws {
-        let key = SymmetricKey(data: Data((0..<16).map { UInt8($0) }))
-        let hex = "000102030405060708090a0bd02ef7ff641bf75448d2618a76417108b3261ae625889e828953daadb109ad40ed852a69f99c05ce7ebd"
-        guard let wire = Data(hex: hex, expectedCount: 54) else { throw Failure.vector }
-        let box = try AES.GCM.SealedBox(combined: wire)
-        let plain = try AES.GCM.open(box, using: key, authenticating: Wire.aad)
-        guard plain.count == 26, plain.prefix(4) == Data("CBP1".utf8),
-              plain.u32(4) == 2, plain.u32(8) == 3, plain.u64(12) == 123456,
-              plain.dropFirst(20) == Data("vector".utf8) else { throw Failure.vector }
-        let proof = HMAC<SHA256>.authenticationCode(for: Wire.auth + Data((0..<16).map { UInt8($0) }), using: key)
-        guard Data(proof.prefix(16)) == Data(hex: "4d06a2c8ab55783e7134fe072b02c7f2") else { throw Failure.vector }
-        let textHex = "000102030405060708090a0bd02ef3ff661bf7544bd2618a76417108b3261ae6b7505d13439c1e919807ce05f5e6a99e90e7d2c24dfe458eaeecf7a0c56f8b69862b34a991f0311617bed155762aa85d67"
-        guard let textWire = Data(hex: textHex, expectedCount: 81) else { throw Failure.vector }
-        let textBox = try AES.GCM.SealedBox(combined: textWire)
-        let textPlain = try AES.GCM.open(textBox, using: key, authenticating: Wire.aad)
-        guard textPlain.prefix(4) == Data("CBT1".utf8), textPlain.u32(4) == 0,
-              textPlain.u32(8) == 0, textPlain.u64(12) == 123456,
-              String(data: textPlain.dropFirst(20), encoding: .utf8) == "你好，ClipBridge!\r\nLine 2\t🙂" else { throw Failure.vector }
-    }
-    enum Failure: Error { case vector }
-}
-
-private enum PairingKey {
-    static let service = "local.clipbridge.ble.prototype"
-    static var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service, kSecAttrAccount as String: "pairing"]
-    }
-    static func load() -> String {
-        var q = query
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-    static func save(_ text: String) -> Bool {
-        let data = Data(text.utf8)
-        let update = [kSecValueData as String: data]
-        var result = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if result == errSecItemNotFound {
-            var q = query
-            q[kSecValueData as String] = data
-            q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            result = SecItemAdd(q as CFDictionary, nil)
-        }
-        return result == errSecSuccess
-    }
-}
 
 // CoreBluetooth callbacks use the main queue. Swift 5 mode avoids importing
 // Swift 6 strict-concurrency assumptions into this Playgrounds prototype.
@@ -129,11 +39,15 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
     private var latestContent: ClipboardContent?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
+    // MARK: - Diagnostics
+
     func log(_ message: String) {
         let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
         events.insert("\(stamp) \(message)", at: 0)
         if events.count > 18 { events.removeLast(events.count - 18) }
     }
+
+    // MARK: - Connection lifecycle
 
     func connect() {
         let text = keyText.filter { !$0.isWhitespace }.lowercased()
@@ -169,6 +83,8 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
         textSupport = "等待连接"
         status = "已停止"
     }
+
+    // MARK: - Bluetooth discovery and reconnection
 
     private func scan() {
         guard !manualStop, central?.state == .poweredOn else { return }
@@ -222,6 +138,8 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
         reconnectDelay = min(reconnectDelay * 2, 15)
     }
 
+    // MARK: - GATT discovery and authentication
+
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil, let service = p.services?.first(where: { $0.uuid == Wire.service }) else {
             fail("找不到 ClipBridge 服务：\(error?.localizedDescription ?? "未知")"); return
@@ -267,6 +185,8 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
         if let peripheral { central?.cancelPeripheralConnection(peripheral) }
     }
     func receiveLatest() { if ready { write(Data([19])) } }
+
+    // MARK: - Transfer assembly, verification and receipt
 
     private func ack(_ id: UInt32) {
         var value = Data([17]); value.appendU32(id); value.appendU32(UInt32(payload.count))
@@ -351,6 +271,8 @@ final class BLEBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBP
             } catch { fail("内容解密或完整性检查失败：\(error.localizedDescription)") }
         } else { fail("不支持的协议帧") }
     }
+
+    // MARK: - Clipboard output
 
     func copyLatest() {
         guard let latestContent else { return }

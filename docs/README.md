@@ -12,6 +12,7 @@
 ## 开发者
 
 - [开发与构建](development/build.md)：目录说明、环境、测试、EXE 构建及发布包。
+- [源码地图](development/source-map.md)：模块职责、阅读顺序、常见改动与测试位置。
 - [蓝牙协议](development/protocol.md)：图片格式、文字格式、能力协商。
 - [测试与兼容性](development/testing.md)：已经验证什么、仍需实测什么。
 - [第三方依赖与许可](development/third-party.md)。

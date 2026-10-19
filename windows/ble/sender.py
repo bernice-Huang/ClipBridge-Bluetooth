@@ -1,19 +1,10 @@
-"""Windows BLE sender. Captures NEW images/plain text into memory only."""
-import argparse
+"""BLE service, authentication, flow control and encrypted clipboard delivery."""
 import asyncio
-import ctypes
-from ctypes import wintypes
-from dataclasses import dataclass
-import hashlib
 import hmac
-import json
 import logging
-from pathlib import Path
 import secrets
-import threading
 import time
 
-from PIL import Image, ImageGrab
 from winrt.windows.devices.bluetooth import BluetoothAdapter, BluetoothError
 from winrt.windows.devices.bluetooth.genericattributeprofile import (
     GattCharacteristicProperties as Properties,
@@ -25,73 +16,27 @@ from winrt.windows.devices.bluetooth.genericattributeprofile import (
     GattServiceProviderAdvertisementStatus,
     GattWriteOption,
 )
-from winrt.windows.storage.streams import DataReader, DataWriter
 
-import protocol as p
-from image_codec import DEFAULT_TARGET_BYTES, encode_image
-from runtime import pairing_key, VERSION
-from clipboard_text import read_text
+from ble import protocol as p
+from ble.buffers import as_buffer, as_bytes, device_id
+from clipboard.image_codec import DEFAULT_TARGET_BYTES
+from clipboard.monitor import ClipboardMonitor
+from clipboard.models import Snapshot
 
 LOG = logging.getLogger("clipbridge")
 
 
-@dataclass(frozen=True)
-class Snapshot:
-    data: bytes
-    width: int
-    height: int
-    captured_ms: int
-    detected: float
-    kind: str = "image"
-
-
-# Windows handles are pointer-sized. ctypes defaults to a 32-bit return value.
-ctypes.windll.kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
-ctypes.windll.kernel32.CreateMutexW.restype = wintypes.HANDLE
-ctypes.windll.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-ctypes.windll.kernel32.CloseHandle.restype = wintypes.BOOL
-ctypes.windll.kernel32.GetLastError.restype = wintypes.DWORD
-ctypes.windll.user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
-
-
-def as_buffer(data):
-    writer = DataWriter()
-    try:
-        writer.write_bytes(data)
-        return writer.detach_buffer()
-    finally:
-        writer.close()
-
-
-def as_bytes(buffer):
-    reader = DataReader.from_buffer(buffer)
-    try:
-        data = bytearray(buffer.length)
-        reader.read_bytes(data)
-        return bytes(data)
-    finally:
-        reader.close()
-
-
-def device_id(session):
-    return session.device_id.id
-
-
-def load_key(path):
-    if path.exists():
-        key = bytes.fromhex(json.loads(path.read_text(encoding="utf-8"))["key"])
-        if len(key) != 16:
-            raise ValueError("Invalid session key; do not overwrite the existing session.json")
-        return key
-    key = secrets.token_bytes(16)
-    # Only a pairing secret is persisted; PNG bytes are never written to disk.
-    with path.open("x", encoding="utf-8") as target:
-        json.dump({"protocol": 1, "key": key.hex()}, target)
-    return key
-
-
 class Sender:
-    def __init__(self, key, *, pipeline=4, quality="balanced", target_bytes=DEFAULT_TARGET_BYTES, sync_text=True, on_status=None):
+    """Coordinate one authenticated iPad and the latest in-memory snapshot.
+
+    Clipboard polling belongs to ``capture``; all GATT/session state below is
+    confined to the asyncio worker. No UI or clipboard API calls live here.
+    """
+
+    def __init__(
+        self, key, *, pipeline=4, quality="balanced", target_bytes=DEFAULT_TARGET_BYTES,
+        sync_text=True, on_status=None,
+    ):
         if pipeline not in (1, 2, 4, 8):
             raise ValueError("Pipeline must be 1, 2, 4 or 8")
         self.key = key
@@ -100,7 +45,6 @@ class Sender:
         self.target_bytes = target_bytes
         if type(sync_text) is not bool:
             raise ValueError("Text sync setting must be boolean")
-        self.sync_text = sync_text
         self.on_status = on_status
         self.pending_configuration = None
         self.loop = asyncio.get_running_loop()
@@ -119,11 +63,9 @@ class Sender:
         self.sent_offset = 0
         self.active_id = None
         self.early_receipt = False
-        self.stop_monitor = threading.Event()
-        self.capture_paused = threading.Event()
-        self.capture_lock = threading.Lock()
-        self.capture_epoch = 0
-        self.capture_baseline = None
+        self.capture = ClipboardMonitor(
+            key, self.loop, self.publish, lambda: (self.quality, self.target_bytes), sync_text=sync_text
+        )
 
     def report(self, **values):
         if self.on_status is not None:
@@ -138,15 +80,10 @@ class Sender:
         if sync_text is not None and type(sync_text) is not bool:
             raise ValueError("Text sync setting must be boolean")
         self.pending_configuration = (quality, pipeline, target_bytes)
-        if sync_text is not None:
-            with self.capture_lock:
-                if sync_text != self.sync_text:
-                    self.sync_text = sync_text
-                    self.capture_epoch += 1
-                    self.capture_baseline = ctypes.windll.user32.GetClipboardSequenceNumber()
-                    if self.latest is not None and self.latest.kind == "text":
-                        self.latest = None
-                        self.pending.clear()
+        if sync_text is not None and self.capture.set_text_enabled(sync_text):
+            if self.latest is not None and self.latest.kind == "text":
+                self.latest = None
+                self.pending.clear()
         if self.active_id is None:
             self.apply_pending_configuration()
 
@@ -157,24 +94,18 @@ class Sender:
             self.report(pipeline=self.pipeline)
 
     def set_capture_paused(self, value):
-        with self.capture_lock:
-            if bool(value) != self.capture_paused.is_set():
-                self.capture_epoch += 1
-                if value:
-                    self.capture_paused.set()
-                    self.latest = None
-                    self.pending.clear()
-                else:
-                    # Also exclude images captured during a pause shorter than
-                    # the monitor's polling interval, and discard queued work.
-                    self.capture_baseline = ctypes.windll.user32.GetClipboardSequenceNumber()
-                    self.capture_paused.clear()
+        self.capture.set_paused(value)
+        if value:
+            self.latest = None
+            self.pending.clear()
         self.report(paused=bool(value))
 
     def schedule(self, coroutine):
         task = self.loop.create_task(coroutine)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+
+    # Service lifecycle and native callback handoff.
 
     async def characteristic(self, uuid, properties, description):
         options = GattLocalCharacteristicParameters()
@@ -264,6 +195,8 @@ class Sender:
         finally:
             deferral.complete()
 
+    # Authenticated control frames: capability, ACK, receipt, resend and stop.
+
     def accept_control(self, identity, raw):
         command = raw[0]
         if command == p.AUTH and len(raw) == 17:
@@ -351,6 +284,8 @@ class Sender:
             self.progress.set()
             self.received.set()
 
+    # Ordered notification pipeline; completion order never changes wire order.
+
     @staticmethod
     async def notification_completed(operation):
         result = await operation
@@ -389,10 +324,13 @@ class Sender:
             if operations:
                 await asyncio.gather(*operations, return_exceptions=True)
 
-    def publish(self, snapshot, epoch=None):
-        if self.capture_paused.is_set() or (epoch is not None and epoch != self.capture_epoch):
+    # Capture-to-transport handoff and one-payload-at-a-time delivery.
+
+    def publish(self, snapshot: Snapshot, epoch: int | None = None):
+        """Accept capture-thread output only if its pause/settings epoch is current."""
+        if self.capture.paused.is_set() or (epoch is not None and epoch != self.capture.epoch):
             return
-        if snapshot.kind == "text" and not self.sync_text:
+        if snapshot.kind == "text" and not self.capture.sync_text:
             return
         self.latest = snapshot
         if snapshot.kind == "text":
@@ -402,81 +340,8 @@ class Sender:
         self.report(last_content=summary)
         self.pending.set()
 
-    def monitor(self):
-        sequence = ctypes.windll.user32.GetClipboardSequenceNumber()
-        last_digest = None
-        previous_epoch = self.capture_epoch
-        while not self.stop_monitor.wait(0.15):
-            with self.capture_lock:
-                current = ctypes.windll.user32.GetClipboardSequenceNumber()
-                if self.capture_baseline is not None:
-                    sequence = self.capture_baseline
-                    self.capture_baseline = None
-                epoch = self.capture_epoch
-                if epoch != previous_epoch:
-                    last_digest = None
-                    previous_epoch = epoch
-                if self.capture_paused.is_set():
-                    sequence = current
-                    continue
-            if current == sequence:
-                continue
-            detected = time.monotonic()
-            captured_ms = int(time.time() * 1000)
-            try:
-                image = ImageGrab.grabclipboard()
-                if not isinstance(image, Image.Image):
-                    if not isinstance(image, list) and self.sync_text:
-                        text = read_text()
-                        if ctypes.windll.user32.GetClipboardSequenceNumber() != current:
-                            continue
-                        if text:
-                            if self.key.hex() in text.lower():
-                                LOG.info("Text containing the pairing key was not sent")
-                            else:
-                                encoded_text = text.encode("utf-8")
-                                self.loop.call_soon_threadsafe(self.publish,
-                                    Snapshot(encoded_text, 0, 0, captured_ms, detected, "text"), epoch)
-                                LOG.info("New clipboard text: %s UTF-8 bytes (memory only; content not logged)", len(encoded_text))
-                    last_digest = None
-                    sequence = current
-                    continue
-                source_width, source_height = image.size
-                if source_width > 8192 or source_height > 8192 or source_width * source_height > 32_000_000:
-                    image.close()
-                    LOG.warning("Screenshot dimensions exceed prototype bounds: %sx%s", source_width, source_height)
-                    sequence = current
-                    continue
-                encode_started = time.monotonic()
-                with image:
-                    encoded = encode_image(image, quality=self.quality, target_bytes=self.target_bytes)
-                encode_ms = (time.monotonic() - encode_started) * 1000
-                png, width, height = encoded.png, encoded.width, encoded.height
-                if ctypes.windll.user32.GetClipboardSequenceNumber() != current:
-                    continue
-                digest = hashlib.sha256(png).digest()
-                if digest != last_digest:
-                    # Validate bounds before queuing or encrypting.
-                    if len(png) > p.MAX_PNG or width > 8192 or height > 8192 or width * height > 32_000_000:
-                        LOG.warning("Screenshot too large: %sx%s, %s bytes; use a smaller region", width, height, len(png))
-                    else:
-                        self.loop.call_soon_threadsafe(self.publish, Snapshot(png, width, height, captured_ms, detected), epoch)
-                        LOG.info("New screenshot: %sx%s -> %sx%s; original=%.1f KiB, send=%.1f KiB; mode=%s; encode=%.0fms (memory only)",
-                                 source_width, source_height, width, height, encoded.original_bytes / 1024,
-                                 len(png) / 1024, encoded.method, encode_ms)
-                        if not encoded.target_met:
-                            LOG.info("PNG remains above %.1f KiB target to preserve legibility; under-3s is not guaranteed", self.target_bytes / 1024)
-                        last_digest = digest
-                sequence = current
-            except ValueError:
-                LOG.warning("Clipboard content is invalid or exceeds supported limits; not sent")
-                sequence = current
-                last_digest = None
-            except Exception as error:
-                # Clipboard locks are transient. Retry the SAME sequence later.
-                LOG.debug("Clipboard temporarily unavailable: %s", type(error).__name__)
-
-    async def transfer(self, snapshot, identity):
+    async def transfer(self, snapshot: Snapshot, identity):
+        """Encrypt one snapshot, deliver ordered frames, and await a write-attempt receipt."""
         if snapshot.kind == "text" and identity not in self.text_clients:
             raise ValueError("Receiver has not negotiated text support; update the iPad receiver")
         client = self.subscribed(identity)
@@ -564,7 +429,7 @@ class Sender:
         while True:
             await self.pending.wait()
             self.pending.clear()
-            if self.latest is None or self.client_id is None or self.capture_paused.is_set():
+            if self.latest is None or self.client_id is None or self.capture.paused.is_set():
                 continue
             snapshot, identity = self.latest, self.client_id
             if snapshot.kind == "text" and identity not in self.text_clients:
@@ -581,7 +446,7 @@ class Sender:
                     self.report(pipeline=1)
 
     async def close(self):
-        self.stop_monitor.set()
+        self.capture.stop.set()
         if self.provider is not None:
             self.provider.stop_advertising()
         for obj, event, token in self.tokens:
@@ -591,51 +456,3 @@ class Sender:
         if self.tasks:
             await asyncio.gather(*self.tasks, return_exceptions=True)
         self.latest = None
-
-
-async def main(options):
-    key = pairing_key()
-    print(f"\nClipBridge Bluetooth {VERSION} — adaptive PNG / ordered notification pipeline.")
-    print(f"Quality={options.quality}, target={options.target_kib} KiB, pipeline={options.pipeline}. Keep the pairing key private.")
-    if not options.smoke:
-        print(f"Pairing key for iPad: {key.hex()}\n", flush=True)
-    print("Enable Bluetooth on iPad, open the supplied Swift Playgrounds project, paste the key and tap Connect.")
-    print("Only NEW clipboard images/plain text are captured. Text requires the updated iPad receiver. Ctrl+C exits.\n", flush=True)
-    sender = Sender(key, pipeline=options.pipeline, quality=options.quality, target_bytes=options.target_kib * 1024)
-    thread = None
-    try:
-        await sender.start()
-        if options.smoke:
-            await asyncio.sleep(options.smoke)
-            return
-        thread = threading.Thread(target=sender.monitor, name="clipboard-monitor", daemon=True)
-        thread.start()
-        await sender.run()
-    finally:
-        await sender.close()
-        if thread is not None:
-            thread.join(timeout=2)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--smoke", type=float, default=0, help="Test GATT setup for N seconds without reading the clipboard")
-    parser.add_argument("--quality", choices=("balanced", "original"), default="balanced", help="Balanced allows moderate palette/size reduction; original keeps pixels")
-    parser.add_argument("--pipeline", type=int, choices=(1, 2, 4, 8), default=4, help="Maximum outstanding ordered notifications; 1 is compatibility mode")
-    parser.add_argument("--target-kib", type=int, choices=range(16, 129), default=32, metavar="16..128", help="Soft PNG size target; legibility limits take priority")
-    options = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    # Different mutex from network V2. Never run two Bluetooth prototype senders.
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\ClipBridgeBluetoothPrototype")
-    if not mutex or ctypes.windll.kernel32.GetLastError() == 183:
-        print("A Bluetooth prototype is already running. Close that window first.")
-        raise SystemExit(2)
-    try:
-        asyncio.run(main(options))
-    except KeyboardInterrupt:
-        print("\nClipBridge Bluetooth stopped; no screenshot files were saved.")
-    except Exception as error:
-        LOG.exception("Startup/runtime failure: %s", error)
-        raise SystemExit(1)
-    finally:
-        ctypes.windll.kernel32.CloseHandle(mutex)
