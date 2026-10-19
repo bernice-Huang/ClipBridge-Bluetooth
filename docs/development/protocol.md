@@ -1,5 +1,7 @@
 # BLE/1 image and negotiated text extension
 
+Developer reference. For installation, start with the [user guide](../user/quick-start.md).
+
 The service/characteristic UUIDs, challenge HMAC, AES-128-GCM AAD (`ClipBridge/1`), 9-byte little-endian frame header, 32-packet ACK window and receipt remain unchanged. Pairing configuration stays `protocol: 1`; no key rotation is required.
 
 ## Text negotiation

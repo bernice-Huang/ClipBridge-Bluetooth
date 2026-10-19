@@ -13,6 +13,6 @@ ClipBridge's own code is MIT licensed. Dependencies and bundled runtime componen
 
 The release packager copies available distribution license files and installed runtime license files into `third_party/`. Refer to those complete texts, not just this summary. pystray is unmodified and uses LGPLv3; Python source, dependency pins and rebuild instructions are provided so its replacement version can be used in a new build. PyInstaller includes its licensing exception in its bundled license text.
 
-To rebuild after replacing an unmodified dependency, use a separate Python 3.12 environment, adjust its version in `requirements.txt`, install `requirements-build.txt`, run the tests, and run `Build-Desktop.ps1`. Prefer a source run for debugging replacement modules. Do not strip third-party notices when redistributing.
+To rebuild after replacing an unmodified dependency, use a separate Python 3.12 environment, adjust its version in `requirements.txt`, install `requirements-build.txt`, run the tests, and run `scripts/Build-Desktop.ps1`. See the [developer guide](build.md). Prefer a source run for debugging replacement modules. Do not strip third-party notices when redistributing.
 
 Apple SDK frameworks are system-provided; this repository distributes Swift source, not Apple's frameworks or a signed iPad binary. Installed dependency metadata and copied full notices are the authoritative source for bundled component details.

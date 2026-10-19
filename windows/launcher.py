@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 
 if not getattr(sys, "frozen", False):
-    sys.path.insert(0, str(Path(__file__).resolve().parent / "windows"))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 try:
     from desktop_app import main

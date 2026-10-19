@@ -38,4 +38,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-Desktop.ps1
 
 自动发送的是新进入剪贴板的图片和文字，复制密码、验证码或其他敏感内容前请暂停或关闭文字同步。文字上限 64 KiB UTF-8 字节，超限会跳过，不截断；文件列表不发送。大图和长文字不保证三秒完成。程序不保存接收内容，但系统剪贴板历史、截图工具及笔记应用保存不受它控制。
 
-配置在 `%LOCALAPPDATA%\ClipBridgeBLE`，不要删除或公开 `session.json`。iPad 剪贴板内容 10 分钟后过期，接收界面可点“重新复制最新内容”再次写入。需要帮助时查看托盘诊断日志，并反馈不含密钥或私人正文的信息。已有用户更新见 [文字同步升级说明](文字同步升级说明.md)。
+配置在 `%LOCALAPPDATA%\ClipBridgeBLE`，不要删除或公开 `session.json`。iPad 剪贴板内容 10 分钟后过期，接收界面可点“重新复制最新内容”再次写入。已有用户见[文字同步升级说明](upgrade-v0.4.md)，遇到问题见[故障排查](troubleshooting.md)。

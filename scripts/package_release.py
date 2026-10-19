@@ -13,13 +13,12 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "0.4.0-beta"
 PUBLIC_ROOT = (
-    ".gitignore", "README.md", "LICENSE", "CHANGELOG.md", "TESTING.md", "THIRD_PARTY.md",
-    "iPad操作说明.md", "简单使用说明.md", "文字同步升级说明.md", "PROTOCOL.md", "requirements.txt", "requirements-build.txt",
-    "launcher.py", "Setup.ps1", "Build-Desktop.ps1", "Install-Desktop.ps1",
-    "Start-ClipBridge-BLE.cmd", "Start-ClipBridge-BLE-Compatible.cmd", "ClipBridgeBLE.spec",
+    ".gitignore", "README.md", "LICENSE", "CHANGELOG.md", "Install-Desktop.ps1",
+    "requirements.txt", "requirements-build.txt",
 )
-PUBLIC_TREES = {"windows": {".py"}, "tests": {".py"}, "scripts": {".py"},
-                "ipad": {".swift", ".plist"}}
+PUBLIC_TREES = {"windows": {".py"}, "tests": {".py"},
+                "scripts": {".py", ".ps1", ".cmd", ".spec"},
+                "docs": {".md"}, "ipad": {".swift", ".plist"}}
 FORBIDDEN = {"session.json", "settings.json", ".env", "app.log", "验证记录.md"}
 
 
@@ -114,11 +113,19 @@ def archive(destination, entries):
             target.write(source, name)
 
 
+def documentation_entries(files):
+    """Preserve the same README/docs paths in both user ZIPs and the repo."""
+    root_docs = [ROOT / name for name in ("README.md", "LICENSE", "CHANGELOG.md")]
+    docs = [path for path in files if path.is_relative_to(ROOT / "docs")]
+    return [(path, path.relative_to(ROOT).as_posix()) for path in root_docs + docs]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--private-config", action="append", default=[])
     parser.add_argument("--audit-only", action="store_true")
     parser.add_argument("--audit-index", action="store_true")
+    parser.add_argument("--output-dir", type=Path, help="Alternate local output folder; does not upload or change tags")
     options = parser.parse_args()
     files = public_files()
     # Include upstream license files explicitly, rather than arbitrary folders.
@@ -135,16 +142,16 @@ def main():
     binary = ROOT / "dist" / "ClipBridgeBLE.exe"
     if not binary.is_file():
         raise ValueError("Build the Windows EXE first")
-    output = ROOT / "release" / f"v{VERSION}"
+    output = options.output_dir if options.output_dir is not None else ROOT / "release" / f"v{VERSION}"
     output.mkdir(parents=True, exist_ok=True)
     notices = collect_notices(output)
     windows = output / f"ClipBridgeBLE-v{VERSION}-windows-x64.zip"
-    windows_docs = ("README.md", "简单使用说明.md", "iPad操作说明.md", "文字同步升级说明.md", "PROTOCOL.md", "LICENSE", "THIRD_PARTY.md", "TESTING.md", "CHANGELOG.md", "Install-Desktop.ps1")
-    archive(windows, [(binary, "ClipBridgeBLE.exe")] + [(ROOT / name, name) for name in windows_docs]
+    docs = documentation_entries(files)
+    archive(windows, [(binary, "ClipBridgeBLE.exe"), (ROOT / "Install-Desktop.ps1", "Install-Desktop.ps1")] + docs
             + [(path, path.relative_to(output).as_posix()) for path in notices])
     ipad = output / f"ClipBridgeBLE-v{VERSION}-ipad.zip"
     archive(ipad, [(path, path.relative_to(ROOT / "ipad").as_posix()) for path in files if "ipad" in path.relative_to(ROOT).parts]
-            + [(ROOT / name, name) for name in ("iPad操作说明.md", "文字同步升级说明.md", "LICENSE")])
+            + docs)
     source = output / f"ClipBridgeBLE-v{VERSION}-source.zip"
     archive(source, [(path, f"ClipBridge-Bluetooth/{path.relative_to(ROOT).as_posix()}") for path in files])
     checksums = output / "SHA256SUMS.txt"

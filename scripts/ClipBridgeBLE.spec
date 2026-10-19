@@ -2,7 +2,7 @@
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
-root = Path(SPECPATH)
+root = Path(SPECPATH).parent
 datas, binaries, hiddenimports = [], [], ['pystray._win32']
 for package in ('PIL', 'pystray', 'winrt'):
     data, binary, hidden = collect_all(package)
@@ -11,7 +11,7 @@ for package in ('PIL', 'pystray', 'winrt'):
     hiddenimports += hidden
 
 a = Analysis(
-    [str(root / 'launcher.py')],
+    [str(root / 'windows' / 'launcher.py')],
     pathex=[str(root / 'windows')],
     binaries=binaries, datas=datas, hiddenimports=hiddenimports,
     hookspath=[], hooksconfig={}, runtime_hooks=[],

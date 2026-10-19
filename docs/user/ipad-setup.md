@@ -1,6 +1,6 @@
 # iPad 安装与验证
 
-这是 Swift Playgrounds 源码工程，不是可以点开安装的 IPA。无需 Mac；需在 iPad 安装 Apple 的 Swift Playgrounds。v0.4.0-beta 新增文字接收，**现有用户必须更新接收工程**，但配对密钥不变。具体见 [文字同步升级说明](文字同步升级说明.md)。
+这是 Swift Playgrounds 源码工程，不是可以点开安装的 IPA。无需 Mac；需在 iPad 安装 Apple 的 Swift Playgrounds。v0.4.0-beta 新增文字接收，**现有用户必须更新接收工程**，但配对密钥不变。具体见[文字同步升级说明](upgrade-v0.4.md)。
 
 ## 1. 导入工程
 

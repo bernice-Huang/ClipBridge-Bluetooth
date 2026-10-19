@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — repository organization
+
+- User-first README with direct Windows/iPad downloads and a three-step setup path.
+- User and developer guides grouped under `docs/`, including a documentation index and troubleshooting guide.
+- Build/setup/console scripts and the PyInstaller spec grouped under `scripts/`; source launcher moved to `windows/` with paths updated.
+- Future packages preserve README/documentation links; local preview output can be selected with `--output-dir`.
+- Documentation-link and repository-layout regression checks added. Application behavior, private settings, published v0.4.0-beta tags and download assets are unchanged.
+
 ## v0.4.0-beta — 2026-10-19 (pre-release; iPad acceptance pending)
 
 - Windows-to-iPad plain-text sync: Unicode, line breaks, tabs and Emoji over the existing encrypted BLE transport.
