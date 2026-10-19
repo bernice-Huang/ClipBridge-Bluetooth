@@ -4,7 +4,7 @@
 
 不需要同一 Wi-Fi、热点、IP 地址或云端中转。适合电脑阅读、iPad 记笔记的场景。
 
-**[下载 v0.4.0-beta](https://github.com/bernice-Huang/ClipBridge-Bluetooth/releases/tag/v0.4.0-beta) · [使用说明](docs/user/quick-start.md) · [遇到问题](docs/user/troubleshooting.md)**
+**[下载 v0.4.0-beta](https://github.com/bernice-Huang/ClipBridge-Bluetooth/releases/tag/v0.4.0-beta) · [全部版本](https://github.com/bernice-Huang/ClipBridge-Bluetooth/releases) · [使用说明](docs/user/quick-start.md) · [遇到问题](docs/user/troubleshooting.md)**
 
 > 当前是实验性 Beta。图片功能已有单套设备使用反馈；新增文字的 iPad 编译、前后台粘贴仍待实测。不保证所有设备兼容或三秒内完成传输。
 
@@ -37,6 +37,19 @@
 - 文字：电脑选中文字 `Ctrl + C` → 等待接收 → 在 iPad 备忘录正文或 Goodnotes 文本框编辑状态中粘贴。
 
 先测试前台，再把接收端留在后台测试。不要划掉 iPad 接收程序；“已尝试写入”不等于粘贴成功，以目标应用粘出刚复制的新内容为准。
+
+## 在哪里找不同版本的文件？
+
+**首页文件列表展示的是 `main` 分支的最新源码，不会为每个版本重复建立文件夹。** 历史版本及其下载文件保存在 [Releases／全部版本](https://github.com/bernice-Huang/ClipBridge-Bluetooth/releases)。
+
+| 已发布版本 | 功能 | 下载入口 |
+| --- | --- | --- |
+| v0.4.0-beta | 图片＋纯文本同步 | [新版下载](https://github.com/bernice-Huang/ClipBridge-Bluetooth/releases/tag/v0.4.0-beta) |
+| v0.3.1-beta | 图片同步 | [历史版下载](https://github.com/bernice-Huang/ClipBridge-Bluetooth/releases/tag/v0.3.1-beta) |
+
+进入对应版本页面，展开 **Assets**，即可看到该版本的 Windows 程序、iPad 工程、源码 ZIP 和校验文件。两端请使用同一版本的发布包；以上两个版本均为实验性 Beta。
+
+需要浏览某个版本的源码或当时的说明文档，可在 [Tags／版本标签](https://github.com/bernice-Huang/ClipBridge-Bluetooth/tags) 中选择对应标签。**目录和说明的整理不一定增加软件版本号，也不会替换已经发布的历史下载包。**
 
 ## 已经安装过？
 
